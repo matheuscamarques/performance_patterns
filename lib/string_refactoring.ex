@@ -13,11 +13,16 @@ defmodule PerformancePatterns.StringRefactoring do
   performance bottleneck for deep or long lists of lists.
   """
   def format_date_naive({y, m, d}) do
+    pad2 = fn n ->
+      s = Integer.to_string(n)
+      if String.length(s) == 1, do: ["0", s], else: s
+    end
+
     ["YY", "/", "MM", "/", "DD"]
     |> Enum.map(fn
-      "YY" -> Integer.to_string(rem(y, 100))
-      "MM" -> Integer.to_string(m)
-      "DD" -> Integer.to_string(d)
+      "YY" -> pad2.(rem(y, 100))
+      "MM" -> pad2.(m)
+      "DD" -> pad2.(d)
       sep -> sep
     end)
     |> List.flatten()
