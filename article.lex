@@ -274,98 +274,66 @@ This section details the concrete implementation plan for the \textit{Performanc
 The \textit{PerformancePatterns} library will be organized into modules, each focusing on a specific optimization category from the source paper. All functions will be accompanied by extensive documentation explaining the performance (anti-)pattern they demonstrate.
 
 \begin{lstlisting}[language=Elixir, caption={Partial outline of the \textit{PerformancePatterns} library.}, label=lst:code-outline, firstnumber=1]
-# lib/performance_patterns.ex
-defmodule PerformancePatterns do
-  @moduledoc """
-  A library for the practical demonstration of performance patterns discussed in
-  "Troubleshooting the Performance of a Large Erlang System" by Tsikoudis and Sugiyama.
-  Each module contains pairs of functions: an idiomatic ("naive") implementation
-  and a refactored ("optimized") implementation for comparison.
-  """
-end
-
-# lib/performance_patterns/string_refactoring.ex
+# lib/string_refactoring.ex
 defmodule PerformancePatterns.StringRefactoring do
-  @moduledoc """
-  Demonstrates replacing generic list/string operations with bespoke,
-  recursive functions for significant performance gains in hot code paths.
-  This mirrors the "String Manipulation" section of the source paper.
-  """
-  @doc """
-  Naive date formatting using a generic, multi-step approach involving
-  `Enum.map` and `List.flatten`. This simulates the use of a general-purpose
-  formatting library which often relies on `lists:flatten/1`, a known
-  performance bottleneck for deep or long lists of lists.
-  """
   def format_date_naive({y, m, d}) do
+    pad2 = fn n ->
+      s = Integer.to_string(n)
+      if String.length(s) == 1, do: ["0", s], else: s
+    end
+
     ["YY", "/", "MM", "/", "DD"]
     |> Enum.map(fn
-      "YY" -> Integer.to_string(rem(y, 100))
-      "MM" -> Integer.to_string(m)
-      "DD" -> Integer.to_string(d)
+      "YY" -> pad2.(rem(y, 100))
+      "MM" -> pad2.(m)
+      "DD" -> pad2.(d)
       sep -> sep
     end)
     |> List.flatten()
     |> IO.iodata_to_binary()
   end
 
-  @doc """
-  Optimized date formatting using a bespoke function that builds an iolist
-  directly. This avoids the creation of intermediate list structures and the
-  costly `List.flatten/1` operation, using efficient `charlist`s.
-  """
-  def format_date_optimized({y, m, d}) do % Padrão otimizado
+  def format_date_optimized({y, m, d}) do
     [
-      format_year_yy_charlist(rem(y, 100)),
-      ~c"/",
-      format_two_digits_charlist(m),
-      ~c"/",
-      format_two_digits_charlist(d)
+      format_year_yy(rem(y, 100)),
+      "/",
+      format_two_digits(m),
+      "/",
+      format_two_digits(d)
     ]
     |> IO.iodata_to_binary()
   end
 
-  % Funções auxiliares que constroem `charlist`s
-  defp format_year_yy_charlist(y) when y < 10, do: ['0' | Integer.to_charlist(y)]
-  defp format_year_yy_charlist(y), do: Integer.to_charlist(y)
-  defp format_two_digits_charlist(n) when n < 10, do: ['0' | Integer.to_charlist(n)]
-  defp format_two_digits_charlist(n), do: Integer.to_charlist(n)
+  defp format_year_yy(y) when y < 10, do: ["0", Integer.to_string(y)]
+  defp format_year_yy(y), do: Integer.to_string(y)
+
+  defp format_two_digits(n) when n < 10, do: ["0", Integer.to_string(n)]
+  defp format_two_digits(n), do: Integer.to_string(n)
 end
 
-# lib/performance_patterns/binary_optimizations.ex
+# lib/binary_optimizations.ex
 defmodule PerformancePatterns.BinaryOptimizations do
-  @moduledoc """
-  Demonstrates binary processing optimizations guided by the Erlang
-  compiler's `+bin_opt_info` flag, as described in the paper.
-  """
-  @doc """
-  Naive stream processing. Pattern matching occurs inside the function body,
-  forcing the creation of a new sub-binary (`rest`) on each recursive call.
-  This prevents compiler optimization and adds GC pressure.
-  """
-  def process_stream_naive(binary, acc \\ []) do % Anti-padrão
-    _process_stream_naive(binary, acc)
+  def decode_naive(<<value::unsigned-little-integer-16, rest::binary>>) do
+    {value, rest}
   end
 
-  defp _process_stream_naive(<<>>, acc), do: Enum.reverse(acc)
-  defp _process_stream_naive(binary, acc) do
-    <<value::unsigned-little-integer-16, rest::binary>> = binary
-    _process_stream_naive(rest, [value | acc])
+  def process_stream_naive(binary) do
+    do_process_stream_naive(binary, [])
   end
 
-  @doc """
-  Optimized stream processing. Pattern matching is moved to the function
-  head, allowing the BEAM compiler to reuse the "match context" and avoid
-  creating sub-binaries in the recursive loop.
-  """
-  def process_stream_optimized(binary, acc \\ []) do % Padrão otimizado
-    _process_stream_optimized(binary, acc)
+  defp do_process_stream_naive(<<>>, acc), do: Enum.reverse(acc)
+
+  defp do_process_stream_naive(binary, acc) do
+    {value, rest} = decode_naive(binary)
+    do_process_stream_naive(rest, [value | acc])
   end
 
-  defp _process_stream_optimized(<<>>, acc), do: Enum.reverse(acc)
-  defp _process_stream_optimized(
-    <<value::unsigned-little-integer-16, rest::binary>>, acc) do
-    _process_stream_optimized(rest, [value | acc])
+  def process_stream_optimized(binary), do: do_process_stream_optimized(binary, [])
+
+  defp do_process_stream_optimized(<<>>, acc), do: Enum.reverse(acc)
+
+  defp do_process_stream_optimized(<<value::unsigned-little-integer-16, rest::binary>>, acc) do
+    do_process_stream_optimized(rest, [value | acc])
   end
 end
 \end{lstlisting}
@@ -394,7 +362,7 @@ The core experimental procedure of this project will follow a structured, three-
 \begin{itemize}
     \item \textbf{Action:} The ``optimized'' versions of the functions will be implemented as detailed in the code outline above (Listing \ref{lst:code-outline}).
     \item \textbf{Verification:} The \textit{Benchee} benchmark suite from Phase 1 will be re-run, this time including the newly implemented optimized functions alongside their naive counterparts.
-    \item \textbf{Goal:} This final phase will rigorously quantify the performance improvement. The comparison output from \textit{Benchee} will provide a clear, concise summary of the results, such as ``\texttt{format\_date\_optimized} is 16.5x faster than \texttt{format\_date\_naive}.'' This validates the effectiveness of the refactoring and fulfills the primary experimental goal of the project.
+    \item \textbf{Goal:} This final phase will rigorously quantify the performance improvement. The comparison output from \textit{Benchee} will provide a clear, concise summary of the results, such as ``\texttt{format\_date\_optimized} is 1.69x faster than \texttt{format\_date\_naive}.'' This validates the effectiveness of the refactoring and fulfills the primary experimental goal of the project.
 \end{itemize}
 
 \begin{table}[h!]
@@ -424,14 +392,15 @@ Deterministic Baseline Experiment & \textit{Benchee} benchmark suite & To provid
 
 \begin{table}[h!]
 \centering
-\caption{Projected Benchee Benchmark Output (Hypothetical)}
-\label{tab:projected-benchmarks}
+\caption{Benchee Benchmark Results}
+\label{tab:benchmarks}
 \begin{tabular}{@{}l l l l@{}}
 \toprule
 \textbf{Scenario} & \textbf{Naive (IPS)} & \textbf{Optimized (IPS)} & \textbf{Improvement} \\
 \midrule
-Date String Formatting & $\sim$ 150 K & $\sim$ 2.5 M & $\sim$ 16.7x \\
-Binary Stream Processing & $\sim$ 4.2 M & $\sim$ 6.7 M & $\sim$ 1.6x \\
+String Formatting & 261.79 K & 441.16 K & 1.69x \\
+List Flattening & 4.60 K & 8.29 K & 1.80x \\
+Binary Stream Processing & 1.47 K & 7.51 K & 5.09x \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -671,14 +640,14 @@ In this scenario, the goal was to demonstrate the cost of the \texttt{List.flatt
 \toprule
 \textbf{Function} & \textbf{IPS} & \textbf{Avg. Time} & \textbf{Relative Performance} \\
 \midrule
-\texttt{optimized\_flatten} & 8.33 K & 120.01 µs & -- \\
-\texttt{naive\_flatten}   & 4.67 K & 214.19 µs & \textbf{1.78x slower} \\
+\texttt{optimized\_flatten} & 8.48 K & 117.87 µs & -- \\
+\texttt{naive\_flatten}   & 4.67 K & 214.23 µs & \textbf{1.82x slower} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 \subsubsection{Discussion}
-The data shows that the optimized version is \textbf{1.78x faster}. The performance difference lies in how the BEAM handles I/O data. The \texttt{IO.iodata\_to\_binary/1} function is highly optimized to handle \texttt{iolists}, which are lists of integers, binaries, or other \texttt{iolists}. By passing the nested list directly, the BEAM can process it in a single, efficient pass.
+The data shows that the optimized version is \textbf{1.82x faster}. The performance difference lies in how the BEAM handles I/O data. The \texttt{IO.iodata\_to\_binary/1} function is highly optimized to handle \texttt{iolists}, which are lists of integers, binaries, or other \texttt{iolists}. By passing the nested list directly, the BEAM can process it in a single, efficient pass.
 
 In contrast, the \texttt{naive} version forces the creation of a new, completely flattened list in memory before passing it for binary conversion. This intermediate step introduces additional memory allocations and processing, explaining the performance drop. This result validates the principle that, in critical code paths, avoiding intermediate data transformation steps and relying on optimized BEAM functions (like those in the \texttt{IO} module) is an effective optimization strategy.
 
@@ -693,18 +662,18 @@ In this test, we processed a binary containing 10,000 16-bit integers, comparing
 \centering
 \caption{Binary Processing Benchmark Results}
 \label{tab:bench-binary}
-\begin{tabular}{@{}l l l l@{}}
+\begin{tabularx}{\textwidth}{@{}l r r l@{}}
 \toprule
-\textbf{Scenario} & \textbf{Naive (IPS)} & \textbf{Optimized (IPS)} & \textbf{Improvement} \\
+\textbf{Function} & \textbf{IPS} & \textbf{Avg. Time} & \textbf{Relative Performance} \\
 \midrule
-Date String Formatting & $\sim$ 150 K & $\sim$ 2.5 M & $\sim$ 16.7x \\
-Binary Stream Processing & $\sim$ 4.2 M & $\sim$ 6.7 M & $\sim$ 1.6x \\
+\texttt{process\_stream\_optimized} & 7.59 K & 131.67 µs & -- \\
+\texttt{process\_stream\_naive} & 1.26 K & 793.96 µs & \textbf{6.03x slower} \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{table}
 
 \subsubsection{Discussion}
-Again, the optimized version proves to be almost \textbf{4.69x faster}. The explanation for this gain lies in a fundamental optimization of the BEAM compiler. By using pattern matching directly in the head of the recursive function, we allow the compiler to reuse the \textbf{pattern matching context}. Instead of allocating a new sub-binary on each iteration---an operation that, while not copying the data, generates pressure on the Garbage Collector (GC)---the compiler simply advances a pointer over the original binary.
+Again, the optimized version proves to be \textbf{6.03x faster}. The explanation for this gain lies in a fundamental optimization of the BEAM compiler. By using pattern matching directly in the head of the recursive function, we allow the compiler to reuse the \textbf{pattern matching context}. Instead of allocating a new sub-binary on each iteration---an operation that, while not copying the data, generates pressure on the Garbage Collector (GC)---the compiler simply advances a pointer over the original binary.
 
 The \texttt{naive} approach, in contrast, prevents this optimization, forcing the creation of 10,000 sub-binary objects, which results in allocation and garbage collection overhead. This example clearly illustrates how structuring code to align with compiler optimizations can lead to significant performance gains, especially when processing large volumes of binary data.
 
@@ -714,6 +683,9 @@ This project proposes a rigorous and practical exploration of performance engine
 The core of the project is a disciplined, three-phase experimental workflow that leverages Elixir's best-in-class tooling. \textit{Benchee} will provide statistically sound quantitative benchmarks, while the BEAM's built-in profiling suite (\texttt{cprof}, \texttt{eprof}, \texttt{fprof}) will be used to perform qualitative analysis, diagnosing the root causes of performance bottlenecks. The expected outcomes, based on the findings of the source paper, are significant performance improvements---potentially an order of magnitude or more for certain operations---that can be clearly demonstrated and explained.
 
 Crucially, the project is grounded in the fundamental principles of functional programming. It will explore the trade-offs between generic higher-order functions and bespoke recursive solutions, the impact of immutability on data processing strategies, and the importance of compiler features like Tail Call Optimization. By extending the analysis to include system-level tools like \textit{Observer}, the project will also connect these low-level code optimizations to their broader impact on memory management and garbage collection within the BEAM virtual machine. This holistic approach ensures that the project is not merely a mechanical exercise in code refactoring, but a meaningful academic investigation into the theory and practice of building high-performance functional systems.
+
+\section*{Code Availability}
+The source code for the \textit{PerformancePatterns} library, including all benchmarks and experiments discussed in this paper, is publicly available on GitHub. The repository can be accessed at: \url{https://github.com/matheuscamarques/performance_patterns}.
 
 \newpage
 % --- BIBLIOGRAPHY ---
